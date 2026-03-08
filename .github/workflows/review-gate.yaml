@@ -1,0 +1,34 @@
+name: Review Gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  pull_request_review:
+    types: [submitted]
+
+permissions: {}
+
+jobs:
+  review-gate:
+    name: Review Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check if review is required
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [ "$PR_AUTHOR" = "peter-svensson" ] || [ "$PR_AUTHOR" = "github-actions[bot]" ]; then
+            echo "PR by $PR_AUTHOR, no review required"
+            exit 0
+          fi
+
+          APPROVED=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/reviews" --jq '[.[] | select(.state == "APPROVED")] | length')
+          if [ "$APPROVED" -lt 1 ]; then
+            echo "::error::PRs by $PR_AUTHOR require at least one approving review"
+            exit 1
+          fi
+
+          echo "PR by $PR_AUTHOR approved, review gate passed"

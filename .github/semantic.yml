@@ -1,0 +1,3 @@
+titleOnly: true
+# Disallows use of Merge commits
+allowMergeCommits: false
