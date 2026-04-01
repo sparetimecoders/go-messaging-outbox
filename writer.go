@@ -70,7 +70,6 @@ func (w *Writer) Write(ctx context.Context, inserter Inserter, routingKey string
 
 	record := Record{
 		ID:         ceHeaders[spec.CEID],
-		EventType:  routingKey,
 		RoutingKey: routingKey,
 		Payload:    payload,
 		Headers:    ceHeaders,
@@ -78,7 +77,7 @@ func (w *Writer) Write(ctx context.Context, inserter Inserter, routingKey string
 	}
 
 	if err := inserter.Insert(ctx, record); err != nil {
-		return err
+		return fmt.Errorf("outbox: insert record: %w", err)
 	}
 	recordEventWritten(routingKey)
 	return nil

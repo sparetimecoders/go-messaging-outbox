@@ -24,6 +24,7 @@ package outbox
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 )
@@ -81,10 +82,10 @@ func (r *Relay) Start(ctx context.Context) error {
 	defer r.logger.Info("outbox relay stopped")
 
 	for {
-		batchWasFull := r.processBatch(ctx)
+		fetched, _ := r.processBatch(ctx)
 
 		delay := r.config.PollInterval
-		if batchWasFull {
+		if fetched >= r.config.BatchSize {
 			delay = 0
 		}
 
@@ -96,18 +97,19 @@ func (r *Relay) Start(ctx context.Context) error {
 				return ctx.Err()
 			case <-t.C:
 			}
-		} else {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
-			}
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
 		}
 	}
 }
 
-func (r *Relay) processBatch(ctx context.Context) bool {
+func (r *Relay) processBatch(ctx context.Context) (fetched int, published int) {
 	published, err := r.store.Process(ctx, r.config.BatchSize, func(records []Record) ([]string, error) {
+		fetched = len(records)
 		var publishedIDs []string
 		for _, record := range records {
 			if ctx.Err() != nil {
@@ -116,17 +118,12 @@ func (r *Relay) processBatch(ctx context.Context) bool {
 
 			startTime := time.Now()
 			if err := r.publisher.PublishRaw(ctx, record.RoutingKey, record.Payload, record.Headers); err != nil {
-				elapsed := time.Since(startTime).Milliseconds()
+				elapsed := time.Since(startTime).Seconds()
 				recordRelayPublished(record.RoutingKey, "error", elapsed)
-				r.logger.Error("outbox: failed to publish event",
-					"event_id", record.ID,
-					"routing_key", record.RoutingKey,
-					"error", err,
-				)
-				break
+				return nil, fmt.Errorf("outbox: publish event %s: %w", record.ID, err)
 			}
 
-			elapsed := time.Since(startTime).Milliseconds()
+			elapsed := time.Since(startTime).Seconds()
 			recordRelayPublished(record.RoutingKey, "ok", elapsed)
 			publishedIDs = append(publishedIDs, record.ID)
 		}
@@ -135,8 +132,8 @@ func (r *Relay) processBatch(ctx context.Context) bool {
 	})
 	if err != nil {
 		r.logger.Error("outbox: process batch failed", "error", err)
-		return false
+		return 0, 0
 	}
 
-	return published >= r.config.BatchSize
+	return fetched, published
 }

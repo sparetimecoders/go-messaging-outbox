@@ -30,6 +30,7 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	outbox "github.com/sparetimecoders/go-messaging-outbox"
 )
@@ -47,16 +48,25 @@ func WithSkipMigrations() StoreOption {
 	}
 }
 
+// WithAdvisoryLockKey sets the key used for the PostgreSQL advisory lock.
+// Defaults to "messaging_outbox".
+func WithAdvisoryLockKey(key string) StoreOption {
+	return func(s *Store) {
+		s.advisoryLockKey = key
+	}
+}
+
 // Store implements outbox.Store using PostgreSQL with pgx.
 type Store struct {
-	pool           *pgxpool.Pool
-	skipMigrations bool
+	pool            *pgxpool.Pool
+	skipMigrations  bool
+	advisoryLockKey string
 }
 
 // NewStore creates a PostgreSQL outbox store. By default it runs the embedded
 // migration to create the outbox table. Use WithSkipMigrations to disable this.
 func NewStore(ctx context.Context, pool *pgxpool.Pool, opts ...StoreOption) (*Store, error) {
-	s := &Store{pool: pool}
+	s := &Store{pool: pool, advisoryLockKey: "messaging_outbox"}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -71,7 +81,7 @@ func NewStore(ctx context.Context, pool *pgxpool.Pool, opts ...StoreOption) (*St
 // Insert adds a new outbox record. For transactional writes alongside business
 // data, use InsertTx to get a transaction-scoped inserter.
 func (s *Store) Insert(ctx context.Context, record outbox.Record) error {
-	return insertRecord(ctx, poolExec(s.pool), record)
+	return insertRecord(ctx, s.pool, record)
 }
 
 // InsertTx returns a transaction-scoped inserter that writes to the given pgx.Tx.
@@ -89,7 +99,7 @@ func (s *Store) Process(ctx context.Context, batchSize int, fn func([]outbox.Rec
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	acquired, err := tryAdvisoryLock(ctx, tx)
+	acquired, err := tryAdvisoryLock(ctx, tx, s.advisoryLockKey)
 	if err != nil {
 		return 0, err
 	}
@@ -123,16 +133,16 @@ func (s *Store) Process(ctx context.Context, batchSize int, fn func([]outbox.Rec
 	return len(publishedIDs), nil
 }
 
-func insertRecord(ctx context.Context, execFn func(ctx context.Context, sql string, arguments ...any) error, record outbox.Record) error {
+func insertRecord(ctx context.Context, q querier, record outbox.Record) error {
 	headersJSON, err := json.Marshal(record.Headers)
 	if err != nil {
 		return fmt.Errorf("outbox: marshal headers: %w", err)
 	}
 
-	err = execFn(ctx,
-		`INSERT INTO messaging_outbox (id, event_type, routing_key, payload, headers, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6)`,
-		record.ID, record.EventType, record.RoutingKey, record.Payload, headersJSON, record.CreatedAt,
+	_, err = q.Exec(ctx,
+		`INSERT INTO messaging_outbox (id, routing_key, payload, headers, created_at)
+		 VALUES ($1, $2, $3, $4, $5)`,
+		record.ID, record.RoutingKey, record.Payload, headersJSON, record.CreatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("outbox: insert: %w", err)
@@ -140,23 +150,14 @@ func insertRecord(ctx context.Context, execFn func(ctx context.Context, sql stri
 	return nil
 }
 
-func poolExec(pool *pgxpool.Pool) func(ctx context.Context, sql string, arguments ...any) error {
-	return func(ctx context.Context, sql string, arguments ...any) error {
-		_, err := pool.Exec(ctx, sql, arguments...)
-		return err
-	}
-}
-
-func txExec(tx pgx.Tx) func(ctx context.Context, sql string, arguments ...any) error {
-	return func(ctx context.Context, sql string, arguments ...any) error {
-		_, err := tx.Exec(ctx, sql, arguments...)
-		return err
-	}
+// querier abstracts the Exec method shared by pgxpool.Pool and pgx.Tx.
+type querier interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
 }
 
 func fetchAndLock(ctx context.Context, tx pgx.Tx, limit int) ([]outbox.Record, error) {
 	rows, err := tx.Query(ctx,
-		`SELECT id, event_type, routing_key, payload, headers, created_at
+		`SELECT id, routing_key, payload, headers, created_at
 		 FROM messaging_outbox
 		 ORDER BY created_at ASC, id ASC
 		 LIMIT $1
@@ -171,7 +172,7 @@ func fetchAndLock(ctx context.Context, tx pgx.Tx, limit int) ([]outbox.Record, e
 	for rows.Next() {
 		var r outbox.Record
 		var headersJSON []byte
-		if err := rows.Scan(&r.ID, &r.EventType, &r.RoutingKey, &r.Payload, &headersJSON, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.RoutingKey, &r.Payload, &headersJSON, &r.CreatedAt); err != nil {
 			return nil, fmt.Errorf("outbox: scan: %w", err)
 		}
 		if err := json.Unmarshal(headersJSON, &r.Headers); err != nil {
@@ -187,10 +188,10 @@ func fetchAndLock(ctx context.Context, tx pgx.Tx, limit int) ([]outbox.Record, e
 	return records, nil
 }
 
-func tryAdvisoryLock(ctx context.Context, tx pgx.Tx) (bool, error) {
+func tryAdvisoryLock(ctx context.Context, tx pgx.Tx, lockKey string) (bool, error) {
 	var acquired bool
 	err := tx.QueryRow(ctx,
-		`SELECT pg_try_advisory_xact_lock(hashtext('messaging_outbox'))`,
+		`SELECT pg_try_advisory_xact_lock(hashtext($1))`, lockKey,
 	).Scan(&acquired)
 	if err != nil {
 		return false, fmt.Errorf("outbox: advisory lock: %w", err)
@@ -205,5 +206,5 @@ type txInserter struct {
 }
 
 func (s *txInserter) Insert(ctx context.Context, record outbox.Record) error {
-	return insertRecord(ctx, txExec(s.tx), record)
+	return insertRecord(ctx, s.tx, record)
 }
