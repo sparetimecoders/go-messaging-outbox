@@ -84,7 +84,6 @@ func InitMetrics(registerer prometheus.Registerer) error {
 	return nil
 }
 
-
 func recordEventWritten(routingKey string) {
 	outboxWrittenCounter.WithLabelValues(routingKey).Inc()
 }

@@ -30,6 +30,7 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	outbox "github.com/sparetimecoders/go-messaging-outbox"
 )
@@ -80,7 +81,7 @@ func NewStore(ctx context.Context, pool *pgxpool.Pool, opts ...StoreOption) (*St
 // Insert adds a new outbox record. For transactional writes alongside business
 // data, use InsertTx to get a transaction-scoped inserter.
 func (s *Store) Insert(ctx context.Context, record outbox.Record) error {
-	return insertRecord(ctx, poolExec(s.pool), record)
+	return insertRecord(ctx, s.pool, record)
 }
 
 // InsertTx returns a transaction-scoped inserter that writes to the given pgx.Tx.
@@ -132,13 +133,13 @@ func (s *Store) Process(ctx context.Context, batchSize int, fn func([]outbox.Rec
 	return len(publishedIDs), nil
 }
 
-func insertRecord(ctx context.Context, execFn func(ctx context.Context, sql string, arguments ...any) error, record outbox.Record) error {
+func insertRecord(ctx context.Context, q querier, record outbox.Record) error {
 	headersJSON, err := json.Marshal(record.Headers)
 	if err != nil {
 		return fmt.Errorf("outbox: marshal headers: %w", err)
 	}
 
-	err = execFn(ctx,
+	_, err = q.Exec(ctx,
 		`INSERT INTO messaging_outbox (id, routing_key, payload, headers, created_at)
 		 VALUES ($1, $2, $3, $4, $5)`,
 		record.ID, record.RoutingKey, record.Payload, headersJSON, record.CreatedAt,
@@ -149,18 +150,9 @@ func insertRecord(ctx context.Context, execFn func(ctx context.Context, sql stri
 	return nil
 }
 
-func poolExec(pool *pgxpool.Pool) func(ctx context.Context, sql string, arguments ...any) error {
-	return func(ctx context.Context, sql string, arguments ...any) error {
-		_, err := pool.Exec(ctx, sql, arguments...)
-		return err
-	}
-}
-
-func txExec(tx pgx.Tx) func(ctx context.Context, sql string, arguments ...any) error {
-	return func(ctx context.Context, sql string, arguments ...any) error {
-		_, err := tx.Exec(ctx, sql, arguments...)
-		return err
-	}
+// querier abstracts the Exec method shared by pgxpool.Pool and pgx.Tx.
+type querier interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
 }
 
 func fetchAndLock(ctx context.Context, tx pgx.Tx, limit int) ([]outbox.Record, error) {
@@ -214,5 +206,5 @@ type txInserter struct {
 }
 
 func (s *txInserter) Insert(ctx context.Context, record outbox.Record) error {
-	return insertRecord(ctx, txExec(s.tx), record)
+	return insertRecord(ctx, s.tx, record)
 }

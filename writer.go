@@ -70,7 +70,6 @@ func (w *Writer) Write(ctx context.Context, inserter Inserter, routingKey string
 
 	record := Record{
 		ID:         ceHeaders[spec.CEID],
-		EventType:  routingKey,
 		RoutingKey: routingKey,
 		Payload:    payload,
 		Headers:    ceHeaders,

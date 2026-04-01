@@ -82,10 +82,10 @@ func (r *Relay) Start(ctx context.Context) error {
 	defer r.logger.Info("outbox relay stopped")
 
 	for {
-		batchWasFull := r.processBatch(ctx)
+		fetched, _ := r.processBatch(ctx)
 
 		delay := r.config.PollInterval
-		if batchWasFull {
+		if fetched >= r.config.BatchSize {
 			delay = 0
 		}
 
@@ -98,11 +98,18 @@ func (r *Relay) Start(ctx context.Context) error {
 			case <-t.C:
 			}
 		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
 	}
 }
 
-func (r *Relay) processBatch(ctx context.Context) bool {
+func (r *Relay) processBatch(ctx context.Context) (fetched int, published int) {
 	published, err := r.store.Process(ctx, r.config.BatchSize, func(records []Record) ([]string, error) {
+		fetched = len(records)
 		var publishedIDs []string
 		for _, record := range records {
 			if ctx.Err() != nil {
@@ -125,8 +132,8 @@ func (r *Relay) processBatch(ctx context.Context) bool {
 	})
 	if err != nil {
 		r.logger.Error("outbox: process batch failed", "error", err)
-		return false
+		return 0, 0
 	}
 
-	return published >= r.config.BatchSize
+	return fetched, published
 }

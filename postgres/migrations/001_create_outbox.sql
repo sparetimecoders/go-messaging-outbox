@@ -1,6 +1,5 @@
 CREATE TABLE IF NOT EXISTS messaging_outbox (
     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    event_type  TEXT        NOT NULL,
     routing_key TEXT        NOT NULL,
     payload     JSONB       NOT NULL,
     headers     JSONB       NOT NULL DEFAULT '{}',

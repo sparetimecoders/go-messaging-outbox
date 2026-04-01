@@ -36,7 +36,6 @@ func TestWriter_Write(t *testing.T) {
 	require.Len(t, store.inserted, 1)
 	record := store.inserted[0]
 	assert.Equal(t, "user.created", record.RoutingKey)
-	assert.Equal(t, "user.created", record.EventType)
 	assert.JSONEq(t, `{"name":"alice"}`, string(record.Payload))
 	assert.NotEmpty(t, record.ID)
 	assert.Equal(t, "test-service", record.Headers["ce-source"])

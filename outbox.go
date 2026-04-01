@@ -34,7 +34,6 @@ import (
 // Record represents a single outbox entry stored in the database.
 type Record struct {
 	ID         string
-	EventType  string
 	RoutingKey string
 	Payload    []byte
 	Headers    map[string]string
