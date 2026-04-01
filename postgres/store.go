@@ -47,16 +47,25 @@ func WithSkipMigrations() StoreOption {
 	}
 }
 
+// WithAdvisoryLockKey sets the key used for the PostgreSQL advisory lock.
+// Defaults to "messaging_outbox".
+func WithAdvisoryLockKey(key string) StoreOption {
+	return func(s *Store) {
+		s.advisoryLockKey = key
+	}
+}
+
 // Store implements outbox.Store using PostgreSQL with pgx.
 type Store struct {
-	pool           *pgxpool.Pool
-	skipMigrations bool
+	pool            *pgxpool.Pool
+	skipMigrations  bool
+	advisoryLockKey string
 }
 
 // NewStore creates a PostgreSQL outbox store. By default it runs the embedded
 // migration to create the outbox table. Use WithSkipMigrations to disable this.
 func NewStore(ctx context.Context, pool *pgxpool.Pool, opts ...StoreOption) (*Store, error) {
-	s := &Store{pool: pool}
+	s := &Store{pool: pool, advisoryLockKey: "messaging_outbox"}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -89,7 +98,7 @@ func (s *Store) Process(ctx context.Context, batchSize int, fn func([]outbox.Rec
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	acquired, err := tryAdvisoryLock(ctx, tx)
+	acquired, err := tryAdvisoryLock(ctx, tx, s.advisoryLockKey)
 	if err != nil {
 		return 0, err
 	}
@@ -130,9 +139,9 @@ func insertRecord(ctx context.Context, execFn func(ctx context.Context, sql stri
 	}
 
 	err = execFn(ctx,
-		`INSERT INTO messaging_outbox (id, event_type, routing_key, payload, headers, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6)`,
-		record.ID, record.EventType, record.RoutingKey, record.Payload, headersJSON, record.CreatedAt,
+		`INSERT INTO messaging_outbox (id, routing_key, payload, headers, created_at)
+		 VALUES ($1, $2, $3, $4, $5)`,
+		record.ID, record.RoutingKey, record.Payload, headersJSON, record.CreatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("outbox: insert: %w", err)
@@ -156,7 +165,7 @@ func txExec(tx pgx.Tx) func(ctx context.Context, sql string, arguments ...any) e
 
 func fetchAndLock(ctx context.Context, tx pgx.Tx, limit int) ([]outbox.Record, error) {
 	rows, err := tx.Query(ctx,
-		`SELECT id, event_type, routing_key, payload, headers, created_at
+		`SELECT id, routing_key, payload, headers, created_at
 		 FROM messaging_outbox
 		 ORDER BY created_at ASC, id ASC
 		 LIMIT $1
@@ -171,7 +180,7 @@ func fetchAndLock(ctx context.Context, tx pgx.Tx, limit int) ([]outbox.Record, e
 	for rows.Next() {
 		var r outbox.Record
 		var headersJSON []byte
-		if err := rows.Scan(&r.ID, &r.EventType, &r.RoutingKey, &r.Payload, &headersJSON, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.RoutingKey, &r.Payload, &headersJSON, &r.CreatedAt); err != nil {
 			return nil, fmt.Errorf("outbox: scan: %w", err)
 		}
 		if err := json.Unmarshal(headersJSON, &r.Headers); err != nil {
@@ -187,10 +196,10 @@ func fetchAndLock(ctx context.Context, tx pgx.Tx, limit int) ([]outbox.Record, e
 	return records, nil
 }
 
-func tryAdvisoryLock(ctx context.Context, tx pgx.Tx) (bool, error) {
+func tryAdvisoryLock(ctx context.Context, tx pgx.Tx, lockKey string) (bool, error) {
 	var acquired bool
 	err := tx.QueryRow(ctx,
-		`SELECT pg_try_advisory_xact_lock(hashtext('messaging_outbox'))`,
+		`SELECT pg_try_advisory_xact_lock(hashtext($1))`, lockKey,
 	).Scan(&acquired)
 	if err != nil {
 		return false, fmt.Errorf("outbox: advisory lock: %w", err)

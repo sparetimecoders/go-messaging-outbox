@@ -78,7 +78,7 @@ func (w *Writer) Write(ctx context.Context, inserter Inserter, routingKey string
 	}
 
 	if err := inserter.Insert(ctx, record); err != nil {
-		return err
+		return fmt.Errorf("outbox: insert record: %w", err)
 	}
 	recordEventWritten(routingKey)
 	return nil

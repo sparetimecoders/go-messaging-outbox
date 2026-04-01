@@ -58,9 +58,9 @@ var (
 
 	outboxRelayPublishDuration = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
-			Name:    "outbox_relay_publish_duration_ms",
-			Help:    "Milliseconds taken to publish one event from the relay",
-			Buckets: []float64{1, 5, 10, 25, 50, 100, 250, 500, 1000},
+			Name:    "outbox_relay_publish_duration_seconds",
+			Help:    "Seconds taken to publish one event from the relay",
+			Buckets: prometheus.DefBuckets,
 		}, []string{metricRoutingKey, metricResult},
 	)
 )
@@ -75,9 +75,6 @@ func InitMetrics(registerer prometheus.Registerer) error {
 		outboxRelayPublishDuration,
 	}
 	for _, collector := range collectors {
-		if mv, ok := collector.(metricResetter); ok {
-			mv.Reset()
-		}
 		err := registerer.Register(collector)
 		var are prometheus.AlreadyRegisteredError
 		if err != nil && !errors.As(err, &are) {
@@ -87,17 +84,14 @@ func InitMetrics(registerer prometheus.Registerer) error {
 	return nil
 }
 
-type metricResetter interface {
-	Reset()
-}
 
 func recordEventWritten(routingKey string) {
 	outboxWrittenCounter.WithLabelValues(routingKey).Inc()
 }
 
-func recordRelayPublished(routingKey, result string, durationMs int64) {
+func recordRelayPublished(routingKey, result string, durationSecs float64) {
 	outboxRelayPublishedCounter.WithLabelValues(routingKey, result).Inc()
-	outboxRelayPublishDuration.WithLabelValues(routingKey, result).Observe(float64(durationMs))
+	outboxRelayPublishDuration.WithLabelValues(routingKey, result).Observe(durationSecs)
 }
 
 func recordRelayBatchSize(size int) {

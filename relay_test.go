@@ -6,6 +6,7 @@ package outbox_test
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -53,10 +54,13 @@ func (m *mockProcessor) Process(_ context.Context, batchSize int, fn func([]outb
 }
 
 type mockRawPublisher struct {
+	mu        sync.Mutex
 	published []outbox.Record
 }
 
 func (m *mockRawPublisher) PublishRaw(_ context.Context, routingKey string, payload []byte, headers map[string]string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.published = append(m.published, outbox.Record{
 		RoutingKey: routingKey,
 		Payload:    payload,
