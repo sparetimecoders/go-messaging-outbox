@@ -21,7 +21,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
         run: |
-          if [ "$PR_AUTHOR" = "peter-svensson" ] || [ "$PR_AUTHOR" = "github-actions[bot]" ]; then
+          if [ "$PR_AUTHOR" = "peter-svensson" ] || [ "$PR_AUTHOR" = "github-actions[bot]" ] || [ "$PR_AUTHOR" = "stc-renovate-app[bot]" ]; then
             echo "PR by $PR_AUTHOR, no review required"
             exit 0
           fi
